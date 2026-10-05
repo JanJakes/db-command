@@ -1,0 +1,105 @@
+name: Verify SQLite paths on Windows
+
+on:
+  push:
+    branches:
+      - windows-sqlite-path
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite-path:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      WP_VERSION: trunk
+      WP_CLI_TEST_DBTYPE: sqlite
+      NO_COLOR: '1'
+      WP_CLI_TEST_QUIET: '1'
+      COMPOSER_ROOT_VERSION: dev-main
+    steps:
+      - name: Check out the test branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Use the same temporary directory as upstream Windows CI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'D:\Temp' | Out-Null
+          'TEMP=D:\Temp' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          'TMP=D:\Temp' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install SQLite
+        run: choco install sqlite --yes
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240
+        with:
+          php-version: '8.5'
+          ini-values: zend.assertions=1, error_reporting=-1, display_errors=On
+          extensions: gd, imagick, mysql, zip, pdo_sqlite, exif, fileinfo
+          coverage: none
+          tools: composer
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Check out the merged SQLite plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: WordPress/sqlite-database-integration
+          ref: 4163f69f3d543ec7d6085bbb0c4e0c36b36c0156
+          path: sqlite-source
+          persist-credentials: false
+
+      - name: Preload the merged plugin into the test cache
+        shell: pwsh
+        run: |
+          $cacheRoot = Join-Path (php -r 'echo sys_get_temp_dir();') 'wp-cli-test-sqlite-integration-cache'
+          $plugin = Join-Path $cacheRoot 'sqlite-database-integration'
+          New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+          Copy-Item 'sqlite-source/packages/plugin-sqlite-database-integration' $plugin -Recurse
+          Remove-Item (Join-Path $plugin 'wp-includes/database') -Force
+          Copy-Item 'sqlite-source/packages/mysql-on-sqlite/src' (Join-Path $plugin 'wp-includes/database') -Recurse
+          if (!(Test-Path (Join-Path $plugin 'db.copy'))) { throw 'Missing plugin drop-in template.' }
+          if (!(Test-Path (Join-Path $plugin 'wp-includes/database/version.php'))) { throw 'Missing SQLite driver.' }
+          Write-Host "Using merged SQLite plugin at $plugin"
+
+      - name: Record the tested versions and verify the feature is unchanged
+        shell: bash
+        run: |
+          git fetch origin eb9ef6a83e7444501c920e177f7e547a3f08dc55 --depth=1
+          git diff --exit-code eb9ef6a83e7444501c920e177f7e547a3f08dc55 -- src features composer.json behat.yml
+          php --version
+          sqlite3 --version
+          composer show wp-cli/wp-cli-tests
+          git -C sqlite-source rev-parse HEAD
+
+      - name: Run the four examples three times
+        shell: bash
+        run: |
+          mkdir -p windows-logs
+          failures=0
+          for attempt in 1 2 3; do
+            echo "::group::Windows run $attempt"
+            set +e
+            composer behat -- features/db-sqlite-path.feature --format=pretty 2>&1 | tee "windows-logs/run-$attempt.log"
+            result=${PIPESTATUS[0]}
+            set -e
+            if [ "$result" -ne 0 ] || ! grep -Eq '^4 scenarios \(4 passed\)' "windows-logs/run-$attempt.log"; then
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          done
+          test "$failures" -eq 0
+
+      - name: Save test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-sqlite-path-logs
+          path: windows-logs
+          if-no-files-found: warn
