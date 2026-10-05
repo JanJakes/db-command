@@ -177,12 +177,20 @@ jobs:
           done
           test "$failures" -eq 0
 
+      - name: Collect the MySQL subprocess trace
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path 'D:/Temp/mysql-commands.log') {
+            New-Item -ItemType Directory -Force -Path 'windows-logs' | Out-Null
+            Copy-Item 'D:/Temp/mysql-commands.log' 'windows-logs/mysql-commands.log'
+            Get-Content 'windows-logs/mysql-commands.log'
+          }
+
       - name: Save test logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-skip-logs-${{ matrix.dbtype }}-${{ matrix.plugin }}
-          path: |
-            windows-logs
-            D:/Temp/mysql-commands.log
+          path: windows-logs
           if-no-files-found: warn
