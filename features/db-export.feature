@@ -149,7 +149,7 @@ Feature: Export a WordPress database
     Then STDERR should match #Debug \(db\): Running initial shell command: /([^/]+/)+(mysqldump|mariadb-dump) --no-defaults#
 
   @skip-sqlite
-  @skip-windows
+  @windows-audit
   Scenario: Export database when PHP exec() is disabled
     Given a WP install
 

@@ -1,24 +1,47 @@
-name: Verify SQLite paths on Windows
+name: Verify skipped tests on Windows
 
 on:
   push:
     branches:
-      - windows-sqlite-path
+      - windows-test-skips
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  sqlite-path:
+  skipped-tests:
+    name: ${{ matrix.name }}
     runs-on: windows-2022
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: SQLite merged
+            dbtype: sqlite
+            plugin: merged
+            expected: 7
+          - name: SQLite 3.0.2
+            dbtype: sqlite
+            plugin: published
+            expected: 7
+          - name: MySQL 8.0
+            dbtype: mysql
+            plugin: none
+            expected: 6
     env:
       WP_VERSION: trunk
-      WP_CLI_TEST_DBTYPE: sqlite
+      WP_CLI_TEST_DBTYPE: ${{ matrix.dbtype }}
       NO_COLOR: '1'
       WP_CLI_TEST_QUIET: '1'
       COMPOSER_ROOT_VERSION: dev-main
+      WP_CLI_TEST_DBROOTUSER: root
+      WP_CLI_TEST_DBROOTPASS: root
+      WP_CLI_TEST_DBNAME: wp_cli_test
+      WP_CLI_TEST_DBUSER: wp_cli_test
+      WP_CLI_TEST_DBPASS: password1
+      WP_CLI_TEST_DBHOST: 127.0.0.1:3306
     steps:
       - name: Check out the test branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -33,6 +56,7 @@ jobs:
           'TMP=D:\Temp' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install SQLite
+        if: matrix.dbtype == 'sqlite'
         run: choco install sqlite --yes
 
       - name: Set up PHP
@@ -47,7 +71,25 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
 
+      - name: Set up MySQL
+        if: matrix.dbtype == 'mysql'
+        uses: shogo82148/actions-setup-mysql@083ec148d28e62f2b24b8f4541693dfe1d50488d
+        with:
+          mysql-version: '8.0'
+          auto-start: true
+          root-password: root
+          user: wp_cli_test
+          password: password1
+          my-cnf: |
+            default_authentication_plugin=mysql_native_password
+
+      - name: Prepare the MySQL test database
+        if: matrix.dbtype == 'mysql'
+        shell: bash
+        run: composer prepare-tests
+
       - name: Check out the merged SQLite plugin
+        if: matrix.plugin == 'merged'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: WordPress/sqlite-database-integration
@@ -56,6 +98,7 @@ jobs:
           persist-credentials: false
 
       - name: Preload the merged plugin into the test cache
+        if: matrix.plugin == 'merged'
         shell: pwsh
         run: |
           $cacheRoot = Join-Path (php -r 'echo sys_get_temp_dir();') 'wp-cli-test-sqlite-integration-cache'
@@ -70,6 +113,17 @@ jobs:
           if (!(Test-Path (Join-Path $plugin 'wp-includes/database/version.php'))) { throw 'Missing SQLite driver.' }
           Write-Host "Using merged SQLite plugin at $plugin"
 
+      - name: Preload the published SQLite plugin into the test cache
+        if: matrix.plugin == 'published'
+        shell: pwsh
+        run: |
+          $cacheRoot = Join-Path (php -r 'echo sys_get_temp_dir();') 'wp-cli-test-sqlite-integration-cache'
+          $archive = Join-Path $env:RUNNER_TEMP 'sqlite-plugin.zip'
+          Invoke-WebRequest 'https://downloads.wordpress.org/plugin/sqlite-database-integration.3.0.2.zip' -OutFile $archive
+          Expand-Archive $archive -DestinationPath $cacheRoot
+          if (!(Test-Path (Join-Path $cacheRoot 'sqlite-database-integration/db.copy'))) { throw 'Missing plugin drop-in template.' }
+          Write-Host 'Using published SQLite plugin 3.0.2'
+
       - name: Record the versions and test changes and verify production code is unchanged
         shell: bash
         run: |
@@ -77,22 +131,31 @@ jobs:
           git diff --exit-code eb9ef6a83e7444501c920e177f7e547a3f08dc55 -- src composer.json behat.yml
           git diff eb9ef6a83e7444501c920e177f7e547a3f08dc55 -- features
           php --version
-          sqlite3 --version
           composer show wp-cli/wp-cli-tests
-          git -C sqlite-source rev-parse HEAD
+          if [ "$WP_CLI_TEST_DBTYPE" = sqlite ]; then
+            sqlite3 --version
+            php -r '$pdo = new PDO("sqlite::memory:"); echo "PDO SQLite: ", $pdo->query("SELECT sqlite_version()")->fetchColumn(), PHP_EOL; echo "PDO dbstat enabled: ", (int) in_array("ENABLE_DBSTAT_VTAB", $pdo->query("PRAGMA compile_options")->fetchAll(PDO::FETCH_COLUMN), true), PHP_EOL;'
+          else
+            mysql --version
+          fi
+          if [ -d sqlite-source ]; then
+            git -C sqlite-source rev-parse HEAD
+          fi
 
-      - name: Run the four examples three times
+      - name: Run all applicable formerly skipped scenarios three times
         shell: bash
+        env:
+          EXPECTED_SCENARIOS: ${{ matrix.expected }}
         run: |
           mkdir -p windows-logs
           failures=0
           for attempt in 1 2 3; do
             echo "::group::Windows run $attempt"
             set +e
-            composer behat -- features/db-sqlite-path.feature --format=pretty 2>&1 | tee "windows-logs/run-$attempt.log"
+            composer behat -- --tags=@windows-audit --format=pretty 2>&1 | tee "windows-logs/run-$attempt.log"
             result=${PIPESTATUS[0]}
             set -e
-            if [ "$result" -ne 0 ] || ! grep -Eq '^4 scenarios \(4 passed\)' "windows-logs/run-$attempt.log"; then
+            if [ "$result" -ne 0 ] || ! grep -Eq "^$EXPECTED_SCENARIOS scenarios \\($EXPECTED_SCENARIOS passed\\)" "windows-logs/run-$attempt.log"; then
               failures=$((failures + 1))
             fi
             echo "::endgroup::"
@@ -103,6 +166,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-sqlite-path-logs
+          name: windows-skip-logs-${{ matrix.dbtype }}-${{ matrix.plugin }}
           path: windows-logs
           if-no-files-found: warn
