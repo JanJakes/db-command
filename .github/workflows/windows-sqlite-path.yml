@@ -60,9 +60,11 @@ jobs:
         run: |
           $cacheRoot = Join-Path (php -r 'echo sys_get_temp_dir();') 'wp-cli-test-sqlite-integration-cache'
           $plugin = Join-Path $cacheRoot 'sqlite-database-integration'
-          New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
-          Copy-Item 'sqlite-source/packages/plugin-sqlite-database-integration' $plugin -Recurse
-          Remove-Item (Join-Path $plugin 'wp-includes/database') -Force
+          New-Item -ItemType Directory -Force -Path (Join-Path $plugin 'wp-includes') | Out-Null
+          Get-ChildItem 'sqlite-source/packages/plugin-sqlite-database-integration' |
+            Where-Object Name -NE 'wp-includes' |
+            Copy-Item -Destination $plugin -Recurse
+          Copy-Item 'sqlite-source/packages/plugin-sqlite-database-integration/wp-includes/sqlite' (Join-Path $plugin 'wp-includes/sqlite') -Recurse
           Copy-Item 'sqlite-source/packages/mysql-on-sqlite/src' (Join-Path $plugin 'wp-includes/database') -Recurse
           if (!(Test-Path (Join-Path $plugin 'db.copy'))) { throw 'Missing plugin drop-in template.' }
           if (!(Test-Path (Join-Path $plugin 'wp-includes/database/version.php'))) { throw 'Missing SQLite driver.' }
