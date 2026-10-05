@@ -18,14 +18,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: SQLite merged
-            dbtype: sqlite
-            plugin: merged
-            expected: 7
-          - name: SQLite 3.0.2
-            dbtype: sqlite
-            plugin: published
-            expected: 7
           - name: MySQL 8.0
             dbtype: mysql
             plugin: none
@@ -142,20 +134,43 @@ jobs:
             git -C sqlite-source rev-parse HEAD
           fi
 
-      - name: Run all applicable formerly skipped scenarios three times
+      - name: Trace MySQL subprocesses without changing their behavior
+        shell: pwsh
+        run: |
+          $path = 'vendor/wp-cli/wp-cli/php/utils.php'
+          $source = Get-Content $path -Raw
+          $source = $source.Replace(
+            "`t`$process = proc_open_compat( `$final_cmd, `$descriptors, `$pipes );",
+            "`tfile_put_contents( 'D:/Temp/mysql-commands.log', `$final_cmd . PHP_EOL, FILE_APPEND );`n`t`$process = proc_open_compat( `$final_cmd, `$descriptors, `$pipes );"
+          )
+          $source = $source.Replace(
+            "`t`$exit_code = proc_close( `$process );",
+            "`t`$exit_code = proc_close( `$process );`n`tfile_put_contents( 'D:/Temp/mysql-commands.log', 'Exit: ' . `$exit_code . PHP_EOL, FILE_APPEND );"
+          )
+          Set-Content $path $source
+          php -l $path
+
+      - name: Run the formerly skipped scenarios together and separately
         shell: bash
         env:
           EXPECTED_SCENARIOS: ${{ matrix.expected }}
         run: |
           mkdir -p windows-logs
           failures=0
-          for attempt in 1 2 3; do
-            echo "::group::Windows run $attempt"
+          for target in all features/db-export.feature:153 features/db-search.feature:986 features/db-size.feature:36 features/db-size.feature:86 features/db-size.feature:228 features/db-size.feature:289; do
+            echo "::group::Windows run $target"
+            args=()
+            expected="$EXPECTED_SCENARIOS scenarios ($EXPECTED_SCENARIOS passed)"
+            if [ "$target" != all ]; then
+              args+=("$target")
+              expected='1 scenario (1 passed)'
+            fi
+            log="windows-logs/${target//[\/:]/-}.log"
             set +e
-            composer behat -- --tags=@windows-audit --format=pretty 2>&1 | tee "windows-logs/run-$attempt.log"
+            composer behat -- "${args[@]}" --tags=@windows-audit --format=pretty 2>&1 | tee "$log"
             result=${PIPESTATUS[0]}
             set -e
-            if [ "$result" -ne 0 ] || ! grep -Eq "^$EXPECTED_SCENARIOS scenarios \\($EXPECTED_SCENARIOS passed\\)" "windows-logs/run-$attempt.log"; then
+            if [ "$result" -ne 0 ] || ! grep -Fq "$expected" "$log"; then
               failures=$((failures + 1))
             fi
             echo "::endgroup::"
@@ -167,5 +182,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-skip-logs-${{ matrix.dbtype }}-${{ matrix.plugin }}
-          path: windows-logs
+          path: |
+            windows-logs
+            D:/Temp/mysql-commands.log
           if-no-files-found: warn
