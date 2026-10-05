@@ -70,11 +70,12 @@ jobs:
           if (!(Test-Path (Join-Path $plugin 'wp-includes/database/version.php'))) { throw 'Missing SQLite driver.' }
           Write-Host "Using merged SQLite plugin at $plugin"
 
-      - name: Record the tested versions and verify the feature is unchanged
+      - name: Record the versions and test changes and verify production code is unchanged
         shell: bash
         run: |
           git fetch origin eb9ef6a83e7444501c920e177f7e547a3f08dc55 --depth=1
-          git diff --exit-code eb9ef6a83e7444501c920e177f7e547a3f08dc55 -- src features composer.json behat.yml
+          git diff --exit-code eb9ef6a83e7444501c920e177f7e547a3f08dc55 -- src composer.json behat.yml
+          git diff eb9ef6a83e7444501c920e177f7e547a3f08dc55 -- features
           php --version
           sqlite3 --version
           composer show wp-cli/wp-cli-tests
